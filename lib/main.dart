@@ -31,6 +31,21 @@ const _S = <String, List<String>>{
   'trans': ['Температурата на маслото в скоростната кутия не е стандартен OBD параметър и не се поддържа от всички коли.', 'Gearbox oil temperature is not a standard OBD parameter and is not supported by all cars.'],
   'ble': ['Поддържат се адаптери с Bluetooth LE.', 'Bluetooth LE adapters are supported.'],
   'demo': ['Демо режим (без кола)', 'Demo mode (no car)'],
+  'sev0': ['Информативно', 'Informational'],
+  'sev1': ['Проверете скоро', 'Check soon'],
+  'sev2': ['Спешно – карайте внимателно или спрете', 'Urgent – drive carefully or stop'],
+  'about': ['За приложението', 'About'],
+  'privacy': ['Политика за поверителност', 'Privacy policy'],
+  'terms': ['Условия за ползване', 'Terms of use'],
+  'supported': ['Поддържани автомобили и адаптери', 'Supported cars and adapters'],
+  'contact': ['Контакт', 'Contact'],
+  'licenses': ['Лицензи на библиотеки', 'Open-source licenses'],
+  'version': ['Версия', 'Version'],
+  'tagline': ['Автодиагностика на български', 'Car diagnostics made clear'],
+  'welcome': ['Добре дошли', 'Welcome'],
+  'accept': ['Разбирам и приемам', 'I understand'],
+  'warn2': ['AutoDiag показва грешки от автомобила и обяснява какво може да означават. Информацията е ориентировъчна и не заменя преглед от механик. Не използвайте телефона, докато шофирате.', 'AutoDiag reads fault codes from your vehicle and explains what they may mean. The information is indicative and does not replace a mechanic. Do not use your phone while driving.'],
+  'hint': ['Закачете адаптера в OBD порта, включете запалването и натиснете „Търси адаптер“.', 'Plug the adapter into the OBD port, turn the ignition on and tap "Find adapter".'],
 };
 String t(String k) => _S[k]![lang.value == 'bg' ? 0 : 1];
  
@@ -57,6 +72,9 @@ const Map<String, List<List<String>>> dtcDb = {
     ['Catalyst efficiency below threshold (bank 1)', 'According to the sensors the catalytic converter does not clean the exhaust well enough.', 'Usually drivable, but do not ignore it for long|First check for misfires, exhaust leaks and the oxygen sensors|The catalytic converter is the last part to replace, not the first'],
   ],
 };
+ 
+const sev = <String, int>{'P0087': 2, 'P0101': 1, 'P0171': 1, 'P0300': 2, 'P0420': 1};
+Color sevColor(int v) => v >= 2 ? Colors.red : (v == 1 ? Colors.orange : Colors.blueGrey);
  
 // ---------- ELM327 по Bluetooth LE ----------
 class Elm {
@@ -248,8 +266,8 @@ class App extends StatelessWidget {
       builder: (_, __, ___) => MaterialApp(
             title: 'AutoDiag',
             debugShowCheckedModeBanner: false,
-            theme: ThemeData(colorSchemeSeed: const Color(0xFF1565C0), useMaterial3: true),
-            darkTheme: ThemeData(colorSchemeSeed: const Color(0xFF1565C0), brightness: Brightness.dark, useMaterial3: true),
+            theme: ThemeData(colorSchemeSeed: const Color(0xFF0B5FA5), useMaterial3: true),
+            darkTheme: ThemeData(colorSchemeSeed: const Color(0xFF0B5FA5), brightness: Brightness.dark, useMaterial3: true),
             home: Home(),
           ));
 }
@@ -262,11 +280,33 @@ class Home extends StatefulWidget {
  
 class _HomeState extends State<Home> {
   int i = 0;
+ 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final p = await SharedPreferences.getInstance();
+      if (p.getBool('accepted') == true || !mounted) return;
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (d) => AlertDialog(
+          title: Text(t('welcome')),
+          content: Text(t('warn2')),
+          actions: [FilledButton(onPressed: () { p.setBool('accepted', true); Navigator.pop(d); }, child: Text(t('accept')))],
+        ),
+      );
+    });
+  }
   @override
   Widget build(BuildContext c) => Scaffold(
-        appBar: AppBar(title: const Text('AutoDiag'), actions: [
-          TextButton(onPressed: () => lang.value = lang.value == 'bg' ? 'en' : 'bg', child: Text(lang.value == 'bg' ? 'EN' : 'БГ')),
-        ]),
+        appBar: AppBar(
+          title: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.car_repair), const SizedBox(width: 8), const Text('AutoDiag')]),
+          actions: [
+            IconButton(icon: const Icon(Icons.info_outline), tooltip: t('about'), onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => AboutPage()))),
+            TextButton(onPressed: () => lang.value = lang.value == 'bg' ? 'en' : 'bg', child: Text(lang.value == 'bg' ? 'EN' : 'БГ')),
+          ],
+        ),
         body: [ScanTab(), LiveTab(), HistTab()][i],
         bottomNavigationBar: NavigationBar(
           selectedIndex: i,
@@ -348,7 +388,18 @@ class _ScanTabState extends State<ScanTab> {
             if (msg.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(msg)),
             if (busy) const LinearProgressIndicator(),
             if (!on) ...[
-              Text(t('ble')),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(children: [
+                    const Icon(Icons.bluetooth_searching, size: 48),
+                    const SizedBox(height: 8),
+                    Text(t('hint'), textAlign: TextAlign.center),
+                    const SizedBox(height: 4),
+                    Text(t('ble'), style: Theme.of(context).textTheme.bodySmall),
+                  ]),
+                ),
+              ),
               const SizedBox(height: 8),
               FilledButton.icon(onPressed: busy ? null : search, icon: const Icon(Icons.bluetooth_searching), label: Text(t('search'))),
               OutlinedButton.icon(onPressed: busy ? null : startDemo, icon: const Icon(Icons.play_circle_outline), label: Text(t('demo'))),
@@ -376,7 +427,7 @@ class _ScanTabState extends State<ScanTab> {
                             for (final k in cs)
                               Card(
                                 child: ListTile(
-                                  leading: const Icon(Icons.warning_amber),
+                                  leading: Icon(Icons.warning_amber, color: sevColor(sev[k] ?? 1)),
                                   title: Text(k),
                                   subtitle: Text(dtcDb[k]?[lang.value == 'bg' ? 0 : 1][0] ?? '—'),
                                   trailing: const Icon(Icons.chevron_right),
@@ -399,6 +450,14 @@ class CodePage extends StatelessWidget {
       appBar: AppBar(title: Text(code)),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Text(d?[0] ?? code, style: Theme.of(c).textTheme.headlineSmall),
+        if (sev[code] != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Chip(avatar: Icon(Icons.circle, size: 14, color: sevColor(sev[code]!)), label: Text(t('sev${sev[code]}'))),
+            ),
+          ),
         const SizedBox(height: 12),
         Text(d?[1] ?? t('unknown')),
         if (d != null) ...[
@@ -473,13 +532,26 @@ class _LiveTabState extends State<LiveTab> {
       const SizedBox(height: 8),
       Text(t('trans'), style: Theme.of(c).textTheme.bodySmall),
       const SizedBox(height: 12),
-      for (final id in sel)
-        Card(
-          child: ListTile(
-            title: Text(pids.firstWhere((x) => x.id == id).name),
-            trailing: Text(vals[id] ?? '…', style: Theme.of(c).textTheme.headlineSmall),
-          ),
-        ),
+      GridView.count(
+        crossAxisCount: 2,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 1.5,
+        children: [
+          for (final id in sel)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text(pids.firstWhere((x) => x.id == id).name, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(c).textTheme.bodySmall),
+                  Text(vals[id] ?? '…', style: Theme.of(c).textTheme.headlineSmall),
+                ]),
+              ),
+            ),
+        ],
+      ),
     ]);
   }
 }
@@ -512,3 +584,68 @@ class HistTab extends StatelessWidget {
     );
   }
 }
+ 
+ 
+// ---------- За приложението ----------
+const kVersion = '0.2.0';
+const kContact = 'support@example.com'; // СМЕНЕТЕ с вашия имейл за контакт
+ 
+const _T = <String, List<String>>{
+  'privacy': [
+    'AutoDiag не изисква регистрация и не събира лични данни.\n\nДанните от автомобила (грешки и показания) и историята на сканиранията се съхраняват само на вашия телефон и не се изпращат към сървър или трети страни.\n\nBluetooth се използва само за връзка с вашия OBD адаптер. Android изисква разрешение за местоположение, за да търси Bluetooth устройства; приложението не следи и не записва местоположението ви.\n\nМожете да изтриете историята, като изчистите данните на приложението от настройките на телефона.\n\nАко в бъдеще бъдат добавени реклами или покупки, тази политика ще бъде обновена и ще бъде поискано вашето съгласие, където е необходимо.',
+    'AutoDiag does not require registration and does not collect personal data.\n\nVehicle data (fault codes and readings) and your scan history are stored only on your phone and are not sent to any server or third party.\n\nBluetooth is used only to connect to your OBD adapter. Android requires the location permission to search for Bluetooth devices; the app does not track or record your location.\n\nYou can delete the history by clearing the app data in your phone settings.\n\nIf ads or purchases are added in the future, this policy will be updated and your consent will be requested where required.',
+  ],
+  'terms': [
+    'Приложението е предназначено за информация и общо запознаване с диагностичните кодове. Описанията и препоръките са ориентировъчни и не заменят преглед от квалифициран механик.\n\nНе карайте автомобила при предупреждения за безопасност. Не използвайте телефона, докато шофирате.\n\nПриложението се предоставя „както е“, без гаранции. Авторът не носи отговорност за щети, причинени от използването му.\n\nИзползвайте приложението само за собствен автомобил или с разрешението на собственика.',
+    'The app is intended for information and general understanding of diagnostic codes. Descriptions and recommendations are indicative and do not replace inspection by a qualified mechanic.\n\nDo not drive the vehicle when safety warnings are present. Do not use your phone while driving.\n\nThe app is provided "as is" without warranties. The author is not liable for damage caused by its use.\n\nUse the app only on your own vehicle or with the owner permission.',
+  ],
+  'supported': [
+    'Автомобили с OBD-II (EOBD) порт: бензинови от 2001 г. и дизелови от 2004 г. насам.\n\nАдаптери: с Bluetooth LE (например Veepeak OBDCheck BLE). Адаптери с класически Bluetooth не се поддържат.\n\nПриложението чете общите двигателни грешки и стандартни показания на живо. Функции, специфични за марка (ABS, въздушни възглавници, скоростна кутия, кодиране), не се поддържат.',
+    'Vehicles with an OBD-II (EOBD) port: petrol from 2001 and diesel from 2004 onwards.\n\nAdapters: Bluetooth LE (for example Veepeak OBDCheck BLE). Classic Bluetooth adapters are not supported.\n\nThe app reads generic engine fault codes and standard live data. Manufacturer-specific functions (ABS, airbags, transmission, coding) are not supported.',
+  ],
+};
+ 
+class TextPage extends StatelessWidget {
+  final String title, body;
+  TextPage(this.title, this.body, {super.key});
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        appBar: AppBar(title: Text(title)),
+        body: ListView(padding: const EdgeInsets.all(16), children: [Text(body, style: Theme.of(c).textTheme.bodyLarge)]),
+      );
+}
+ 
+class AboutPage extends StatelessWidget {
+  AboutPage({super.key});
+  Widget _row(BuildContext c, IconData i, String k) => ListTile(
+        leading: Icon(i),
+        title: Text(t(k)),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => TextPage(t(k), _T[k]![lang.value == 'bg' ? 0 : 1]))),
+      );
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        appBar: AppBar(title: Text(t('about'))),
+        body: ListView(children: [
+          const SizedBox(height: 24),
+          const Center(child: Icon(Icons.car_repair, size: 64)),
+          const SizedBox(height: 8),
+          Center(child: Text('AutoDiag', style: Theme.of(c).textTheme.headlineMedium)),
+          Center(child: Text(t('tagline'))),
+          Center(child: Text('${t('version')} $kVersion', style: Theme.of(c).textTheme.bodySmall)),
+          const SizedBox(height: 16),
+          _row(c, Icons.directions_car, 'supported'),
+          _row(c, Icons.privacy_tip_outlined, 'privacy'),
+          _row(c, Icons.gavel, 'terms'),
+          ListTile(leading: const Icon(Icons.mail_outline), title: Text(t('contact')), subtitle: Text(kContact)),
+          ListTile(
+            leading: const Icon(Icons.article_outlined),
+            title: Text(t('licenses')),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => showLicensePage(context: c, applicationName: 'AutoDiag', applicationVersion: kVersion),
+          ),
+          Padding(padding: const EdgeInsets.all(16), child: Text(t('warn'), style: Theme.of(c).textTheme.bodySmall)),
+        ]),
+      );
+}
+ 
