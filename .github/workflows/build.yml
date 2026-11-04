@@ -30,7 +30,7 @@ jobs:
           i=s.index('>', s.index('<manifest'))+1
           open(p,'w').write(s[:i]+perms+s[i:])
           PY
-      - run: flutter pub get
+      - run: flutter pub add flutter_blue_plus:^1.32.0 shared_preferences
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
