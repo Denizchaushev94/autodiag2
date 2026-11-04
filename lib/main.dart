@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:ui' show PlatformDispatcher;
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+ 
 // ---------- език ----------
 final lang = ValueNotifier<String>(
     PlatformDispatcher.instance.locale.languageCode == 'bg' ? 'bg' : 'en');
@@ -29,9 +30,10 @@ const _S = <String, List<String>>{
   'pick': ['Изберете параметри', 'Choose parameters'],
   'trans': ['Температурата на маслото в скоростната кутия не е стандартен OBD параметър и не се поддържа от всички коли.', 'Gearbox oil temperature is not a standard OBD parameter and is not supported by all cars.'],
   'ble': ['Поддържат се адаптери с Bluetooth LE.', 'Bluetooth LE adapters are supported.'],
+  'demo': ['Демо режим (без кола)', 'Demo mode (no car)'],
 };
 String t(String k) => _S[k]![lang.value == 'bg' ? 0 : 1];
-
+ 
 // ---------- обяснения: [bg, en] -> [заглавие, описание, действия, разделени с |] ----------
 const Map<String, List<List<String>>> dtcDb = {
   'P0087': [
@@ -55,7 +57,7 @@ const Map<String, List<List<String>>> dtcDb = {
     ['Catalyst efficiency below threshold (bank 1)', 'According to the sensors the catalytic converter does not clean the exhaust well enough.', 'Usually drivable, but do not ignore it for long|First check for misfires, exhaust leaks and the oxygen sensors|The catalytic converter is the last part to replace, not the first'],
   ],
 };
-
+ 
 // ---------- ELM327 по Bluetooth LE ----------
 class Elm {
   final BluetoothDevice dev;
@@ -64,9 +66,15 @@ class Elm {
   Completer<String>? _c;
   StreamSubscription? _sub;
   Future<void> _last = Future.value();
-  Elm(this.dev);
-
+  final bool demo;
+  Elm(this.dev) : demo = false;
+  Elm.demo()
+      : dev = BluetoothDevice.fromId('00:00:00:00:00:00'),
+        demo = true;
+  String get name => demo ? 'Demo' : dev.platformName;
+ 
   Future<void> open() async {
+    if (demo) return;
     await dev.connect(timeout: const Duration(seconds: 15));
     final svcs = await dev.discoverServices();
     for (final s in svcs) {
@@ -98,14 +106,18 @@ class Elm {
     }
     await send('0100', ms: 10000);
   }
-
+ 
   Future<String> send(String cmd, {int ms = 4000}) {
     final done = _last.then((_) => _send(cmd, ms));
     _last = done.then((_) {}, onError: (_) {});
     return done;
   }
-
+ 
   Future<String> _send(String cmd, int ms) async {
+    if (demo) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      return _demo(cmd);
+    }
     _buf.clear();
     final c = Completer<String>();
     _c = c;
@@ -116,17 +128,47 @@ class Elm {
       return _buf.toString();
     });
   }
-
+ 
+  String _demo(String cmd) {
+    final s = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    String hx(int x) => x.toRadixString(16).toUpperCase().padLeft(2, '0');
+    String h(int pid, List<int> b) => '41 ${hx(pid)} ${b.map(hx).join(' ')}';
+    List<int> w(num v) {
+      final n = v.round();
+      return [n >> 8, n & 255];
+    }
+    if (cmd == '03') return '43 03 00 87 01 71 04 20';
+    if (cmd == 'ATRV') return '13.8V';
+    if (cmd.startsWith('AT')) return 'OK';
+    switch (cmd) {
+      case '0100': return '41 00 BE 3F A8 13';
+      case '0105': return h(0x05, [(128 + 4 * sin(s / 7)).round()]);
+      case '015C': return h(0x5C, [(135 + 3 * sin(s / 5)).round()]);
+      case '010B': return h(0x0B, [(45 + 20 * sin(s / 3)).round()]);
+      case '010C': return h(0x0C, w((1800 + 200 * sin(s / 2)) * 4));
+      case '010D': return h(0x0D, [(50 + 10 * sin(s / 4)).round()]);
+      case '010F': return h(0x0F, [68]);
+      case '0111': return h(0x11, [(56 + 10 * sin(s / 3)).round()]);
+      case '0104': return h(0x04, [(100 + 20 * sin(s / 3)).round()]);
+      case '010A': return h(0x0A, [100]);
+      case '0123': return h(0x23, w(1500 + 100 * sin(s / 4)));
+      case '0110': return h(0x10, w(520 + 60 * sin(s / 3)));
+      case '012F': return h(0x2F, [158]);
+      default: return 'NO DATA';
+    }
+  }
+ 
   Future<void> close() async {
+    if (demo) return;
     await _sub?.cancel();
     try { await dev.disconnect(); } catch (_) {}
   }
 }
-
+ 
 Elm? elm;
 final connected = ValueNotifier<bool>(false);
 final lastCodes = ValueNotifier<List<String>?>(null);
-
+ 
 List<String> parseDtc(String raw) {
   final sb = StringBuffer();
   for (var line in raw.toUpperCase().split(RegExp(r'[\r\n]+'))) {
@@ -149,7 +191,7 @@ List<String> parseDtc(String raw) {
   }
   return out.toSet().toList();
 }
-
+ 
 double? pidVal(String raw, String pid, double Function(List<int>) f) {
   final h = raw.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
   final i = h.indexOf('41$pid');
@@ -162,14 +204,14 @@ double? pidVal(String raw, String pid, double Function(List<int>) f) {
   if (b.isEmpty) return null;
   try { return f(b); } catch (_) { return null; }
 }
-
+ 
 Future<void> saveHist(List<String> codes) async {
   final p = await SharedPreferences.getInstance();
   final l = p.getStringList('hist') ?? [];
   l.insert(0, jsonEncode({'t': DateTime.now().toIso8601String(), 'c': codes}));
   await p.setStringList('hist', l.take(10).toList());
 }
-
+ 
 // ---------- параметри на живо ----------
 class Pid {
   final String id, bg, en, unit;
@@ -178,7 +220,7 @@ class Pid {
   Pid(this.id, this.bg, this.en, this.unit, this.dec, this.f);
   String get name => lang.value == 'bg' ? bg : en;
 }
-
+ 
 final pids = <Pid>[
   Pid('05', 'Температура на водата', 'Coolant temperature', '°C', 0, (b) => b[0] - 40.0),
   Pid('5C', 'Температура на маслото', 'Engine oil temperature', '°C', 0, (b) => b[0] - 40.0),
@@ -194,10 +236,10 @@ final pids = <Pid>[
   Pid('2F', 'Ниво на горивото', 'Fuel level', '%', 0, (b) => b[0] * 100 / 255),
   Pid('RV', 'Напрежение на акумулатора', 'Battery voltage', 'V', 1, (b) => 0),
 ];
-
+ 
 // ---------- приложение ----------
 void main() => runApp(App());
-
+ 
 class App extends StatelessWidget {
   App({super.key});
   @override
@@ -211,13 +253,13 @@ class App extends StatelessWidget {
             home: Home(),
           ));
 }
-
+ 
 class Home extends StatefulWidget {
   Home({super.key});
   @override
   State<Home> createState() => _HomeState();
 }
-
+ 
 class _HomeState extends State<Home> {
   int i = 0;
   @override
@@ -237,22 +279,22 @@ class _HomeState extends State<Home> {
         ),
       );
 }
-
+ 
 class ScanTab extends StatefulWidget {
   ScanTab({super.key});
   @override
   State<ScanTab> createState() => _ScanTabState();
 }
-
+ 
 class _ScanTabState extends State<ScanTab> {
   List<ScanResult> found = [];
   bool busy = false;
   String msg = '';
   StreamSubscription? sub;
-
+ 
   @override
   void dispose() { sub?.cancel(); super.dispose(); }
-
+ 
   Future<void> search() async {
     setState(() { found = []; msg = ''; });
     sub?.cancel();
@@ -265,7 +307,7 @@ class _ScanTabState extends State<ScanTab> {
       if (mounted) setState(() => msg = '${t('error')}: $x');
     }
   }
-
+ 
   Future<void> connect(BluetoothDevice d) async {
     await FlutterBluePlus.stopScan();
     setState(() { busy = true; msg = t('connecting'); });
@@ -280,7 +322,12 @@ class _ScanTabState extends State<ScanTab> {
     }
     if (mounted) setState(() => busy = false);
   }
-
+ 
+  void startDemo() {
+    elm = Elm.demo();
+    connected.value = true;
+  }
+ 
   Future<void> readCodes() async {
     setState(() { busy = true; msg = t('reading'); });
     try {
@@ -293,7 +340,7 @@ class _ScanTabState extends State<ScanTab> {
     }
     if (mounted) setState(() => busy = false);
   }
-
+ 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
       valueListenable: connected,
@@ -304,6 +351,7 @@ class _ScanTabState extends State<ScanTab> {
               Text(t('ble')),
               const SizedBox(height: 8),
               FilledButton.icon(onPressed: busy ? null : search, icon: const Icon(Icons.bluetooth_searching), label: Text(t('search'))),
+              OutlinedButton.icon(onPressed: busy ? null : startDemo, icon: const Icon(Icons.play_circle_outline), label: Text(t('demo'))),
               for (final r in found)
                 ListTile(
                   leading: const Icon(Icons.bluetooth),
@@ -312,7 +360,7 @@ class _ScanTabState extends State<ScanTab> {
                   onTap: busy ? null : () => connect(r.device),
                 ),
             ] else ...[
-              ListTile(leading: const Icon(Icons.check_circle, color: Colors.green), title: Text('${t('connected')}: ${elm?.dev.platformName ?? ''}')),
+              ListTile(leading: const Icon(Icons.check_circle, color: Colors.green), title: Text('${t('connected')}: ${elm?.name ?? ''}')),
               FilledButton.icon(onPressed: busy ? null : readCodes, icon: const Icon(Icons.search), label: Text(t('read'))),
               TextButton(
                 onPressed: () async { await elm?.close(); elm = null; connected.value = false; },
@@ -340,7 +388,7 @@ class _ScanTabState extends State<ScanTab> {
             ],
           ]));
 }
-
+ 
 class CodePage extends StatelessWidget {
   final String code;
   CodePage(this.code, {super.key});
@@ -364,27 +412,27 @@ class CodePage extends StatelessWidget {
     );
   }
 }
-
+ 
 class LiveTab extends StatefulWidget {
   LiveTab({super.key});
   @override
   State<LiveTab> createState() => _LiveTabState();
 }
-
+ 
 class _LiveTabState extends State<LiveTab> {
   final sel = <String>{'05', '0C'};
   final vals = <String, String>{};
   bool run = true;
-
+ 
   @override
   void initState() {
     super.initState();
     if (elm != null) loop();
   }
-
+ 
   @override
   void dispose() { run = false; super.dispose(); }
-
+ 
   Future<void> loop() async {
     while (run && mounted && elm != null) {
       final ids = sel.toList();
@@ -407,7 +455,7 @@ class _LiveTabState extends State<LiveTab> {
       }
     }
   }
-
+ 
   @override
   Widget build(BuildContext c) {
     if (elm == null) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(t('noconn'))));
@@ -435,7 +483,7 @@ class _LiveTabState extends State<LiveTab> {
     ]);
   }
 }
-
+ 
 class HistTab extends StatelessWidget {
   HistTab({super.key});
   @override
@@ -446,7 +494,7 @@ class HistTab extends StatelessWidget {
         if (l.isEmpty) return Center(child: Text(t('nohist')));
         return ListView(padding: const EdgeInsets.all(8), children: [for (final x in l) _item(c, jsonDecode(x))]);
       });
-
+ 
   Widget _item(BuildContext c, Map m) {
     final codes = List<String>.from(m['c']);
     final d = DateTime.parse(m['t']).toLocal();
