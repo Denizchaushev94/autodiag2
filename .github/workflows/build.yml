@@ -16,6 +16,7 @@ jobs:
         with:
           channel: stable
       - run: flutter create --platforms=android --org com.example --project-name autodiag .
+      - run: sed -i 's/android:label="autodiag"/android:label="TORQIQ"/' android/app/src/main/AndroidManifest.xml
       - name: Add Bluetooth permissions
         run: |
           python3 - <<'PY'
@@ -30,9 +31,32 @@ jobs:
           i=s.index('>', s.index('<manifest'))+1
           open(p,'w').write(s[:i]+perms+s[i:])
           PY
+      - name: Logo and icon
+        run: |
+          python3 - <<'PY'
+          import os, shutil
+          os.makedirs('assets', exist_ok=True)
+          for n in ('icon.png', 'icon_fg.png'):
+              if os.path.exists(n) and not os.path.exists('assets/' + n):
+                  shutil.move(n, 'assets/' + n)
+          if os.path.exists('assets/icon.png'):
+              s = open('pubspec.yaml').read()
+              s = s.replace('\nflutter:\n', '\nflutter:\n  assets:\n    - assets/icon.png\n', 1)
+              open('pubspec.yaml', 'w').write(s)
+              y = 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "assets/icon.png"\n'
+              if os.path.exists('assets/icon_fg.png'):
+                  y += '  adaptive_icon_background: "#04070D"\n  adaptive_icon_foreground: "assets/icon_fg.png"\n'
+              open('flutter_launcher_icons.yaml', 'w').write(y)
+              os.system('echo ICON=1 >> $GITHUB_ENV')
+          PY
       - run: flutter pub add flutter_blue_plus:^1.32.0 shared_preferences
+      - run: |
+          if [ "$ICON" = "1" ]; then
+            flutter pub add dev:flutter_launcher_icons
+            dart run flutter_launcher_icons
+          fi
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
-          name: autodiag-apk
+          name: torqiq-apk
           path: build/app/outputs/flutter-apk/app-release.apk
