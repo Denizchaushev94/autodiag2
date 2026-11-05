@@ -3,9 +3,10 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' show PlatformDispatcher;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+ 
 // ---------- език ----------
 final lang = ValueNotifier<String>(
     PlatformDispatcher.instance.locale.languageCode == 'bg' ? 'bg' : 'en');
@@ -69,6 +70,11 @@ const _S = <String, List<String>>{
   'cleared': ['Командата е изпълнена. Ако проблемът не е отстранен, грешките ще се върнат.', 'Command completed. If the problem is not fixed, the faults will return.'],
   'clearfail': ['Колата отказа изтриването. Включете запалването и загасете двигателя.', 'The car refused to clear. Turn the ignition on and stop the engine.'],
   'persist': ['Ако грешката се върне след изтриване, проблемът е постоянен: отстранете причината или посетете сервиз.', 'If the code returns after clearing, the problem is persistent: fix the cause or visit a workshop.'],
+  'log': ['Технически журнал', 'Technical log'],
+  'copy': ['Копирай', 'Copy'],
+  'copied': ['Копирано', 'Copied'],
+  'clearlog': ['Изчисти', 'Clear'],
+  'logempty': ['Журналът е празен. Свържете се с адаптер и после го отворете отново.', 'The log is empty. Connect to an adapter and open it again.'],
   'sev0': ['Информативно', 'Informational'],
   'sev1': ['Проверете скоро', 'Check soon'],
   'sev2': ['Спешно – карайте внимателно или спрете', 'Urgent – drive carefully or stop'],
@@ -86,7 +92,7 @@ const _S = <String, List<String>>{
   'hint': ['Закачете адаптера в OBD порта, включете запалването и натиснете „Търси адаптер“.', 'Plug the adapter into the OBD port, turn the ignition on and tap "Find adapter".'],
 };
 String t(String k) => _S[k]![lang.value == 'bg' ? 0 : 1];
-
+ 
 // ---------- обяснения: [bg, en] -> [заглавие, описание, действия, разделени с |] ----------
 const Map<String, List<List<String>>> dtcDb = {
   'P0087': [
@@ -110,10 +116,29 @@ const Map<String, List<List<String>>> dtcDb = {
     ['Catalyst efficiency below threshold (bank 1)', 'According to the sensors the catalytic converter does not clean the exhaust well enough.', 'Usually drivable, but do not ignore it for long|First check for misfires, exhaust leaks and the oxygen sensors|The catalytic converter is the last part to replace, not the first'],
   ],
 };
-
+ 
 const sev = <String, int>{'P0087': 2, 'P0101': 1, 'P0171': 1, 'P0300': 2, 'P0420': 1};
 Color sevColor(int v) => v >= 2 ? Colors.red : (v == 1 ? Colors.orange : Colors.blueGrey);
-
+ 
+// ---------- Технически журнал ----------
+final List<String> _logHead = [];
+final List<String> _logTail = [];
+void logAdd(String s) {
+  final line = '${DateTime.now().toIso8601String().substring(11, 19)} $s';
+  if (_logHead.length < 80) {
+    _logHead.add(line);
+    return;
+  }
+  _logTail.add(line);
+  if (_logTail.length > 300) _logTail.removeAt(0);
+}
+ 
+String logText() => [..._logHead, if (_logTail.isNotEmpty) '... ...', ..._logTail].join('\n');
+void logClear() {
+  _logHead.clear();
+  _logTail.clear();
+}
+ 
 // ---------- ELM327 по Bluetooth LE ----------
 class Elm {
   final BluetoothDevice dev;
@@ -129,11 +154,19 @@ class Elm {
       : dev = BluetoothDevice.fromId('00:00:00:00:00:00'),
         demo = true;
   String get name => demo ? 'Demo' : dev.platformName;
-
+ 
   Future<void> open() async {
     if (demo) return;
     await dev.connect(timeout: const Duration(seconds: 15));
     final svcs = await dev.discoverServices();
+    logAdd('connect ${dev.platformName}');
+    for (final s in svcs) {
+      final chars = s.characteristics.map((c) {
+        final p = c.properties;
+        return '${c.uuid}[${p.notify ? 'N' : ''}${p.write ? 'W' : ''}${p.writeWithoutResponse ? 'w' : ''}]';
+      }).join(' ');
+      logAdd('svc ${s.uuid}: $chars');
+    }
     for (final s in svcs) {
       final u = s.uuid.toString().toLowerCase();
       if (u == '1800' || u == '1801' || u == '180a') continue;
@@ -147,7 +180,11 @@ class Elm {
       }
       if (n != null && w != null) { nt = n; wr = w; break; }
     }
-    if (nt == null || wr == null) throw Exception('UART');
+    if (nt == null || wr == null) {
+      logAdd('NO UART channel found');
+      throw Exception('UART');
+    }
+    logAdd('uart notify=${nt!.uuid} write=${wr!.uuid}');
     await nt!.setNotifyValue(true);
     _sub = nt!.onValueReceived.listen((v) {
       _buf.write(String.fromCharCodes(v));
@@ -163,14 +200,28 @@ class Elm {
     }
     await send('0100', ms: 10000);
   }
-
+ 
   Future<String> send(String cmd, {int ms = 4000}) {
     final done = _last.then((_) => _send(cmd, ms));
     _last = done.then((_) {}, onError: (_) {});
     return done;
   }
-
+ 
   Future<String> _send(String cmd, int ms) async {
+    logAdd('> $cmd');
+    String r;
+    try {
+      r = await _send0(cmd, ms);
+    } catch (e) {
+      logAdd('! $e');
+      rethrow;
+    }
+    final one = r.replaceAll(RegExp(r'[\r\n]+'), ' | ').trim();
+    logAdd('< ${one.isEmpty ? '(empty/timeout)' : one}');
+    return r;
+  }
+ 
+  Future<String> _send0(String cmd, int ms) async {
     if (demo) {
       await Future.delayed(const Duration(milliseconds: 250));
       return _demo(cmd);
@@ -185,7 +236,7 @@ class Elm {
       return _buf.toString();
     });
   }
-
+ 
   String _demo(String cmd) {
     final s = DateTime.now().millisecondsSinceEpoch / 1000.0;
     String hx(int x) => x.toRadixString(16).toUpperCase().padLeft(2, '0');
@@ -237,19 +288,19 @@ class Elm {
       default: return 'NO DATA';
     }
   }
-
+ 
   Future<void> close() async {
     if (demo) return;
     await _sub?.cancel();
     try { await dev.disconnect(); } catch (_) {}
   }
 }
-
+ 
 Elm? elm;
 Set<int>? supported;
 final connected = ValueNotifier<bool>(false);
 final lastCodes = ValueNotifier<List<String>?>(null);
-
+ 
 List<String> parseDtc(String raw, [String hdr = '43']) {
   final sb = StringBuffer();
   for (var line in raw.toUpperCase().split(RegExp(r'[\r\n]+'))) {
@@ -273,7 +324,7 @@ List<String> parseDtc(String raw, [String hdr = '43']) {
   }
   return out.toSet().toList();
 }
-
+ 
 double? pidVal(String raw, String pid, double Function(List<int>) f) {
   final h = raw.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
   final i = h.indexOf('41$pid');
@@ -286,14 +337,14 @@ double? pidVal(String raw, String pid, double Function(List<int>) f) {
   if (b.isEmpty) return null;
   try { return f(b); } catch (_) { return null; }
 }
-
+ 
 Future<void> saveHist(List<String> stored, List<String> pending, List<String> perm) async {
   final p = await SharedPreferences.getInstance();
   final l = p.getStringList('hist') ?? [];
   l.insert(0, jsonEncode({'t': DateTime.now().toIso8601String(), 'c': stored, 'p': pending, 'x': perm, 'car': currentCar()?.title ?? '', 'fuel': currentCar()?.fuel ?? ''}));
   await p.setStringList('hist', l.take(10).toList());
 }
-
+ 
 // ---------- параметри на живо ----------
 class Pid {
   final String id, q, grp, bg, en, unit;
@@ -302,13 +353,13 @@ class Pid {
   Pid(this.id, this.grp, this.bg, this.en, this.unit, this.dec, this.f, {String? q}) : q = q ?? id;
   String get name => lang.value == 'bg' ? bg : en;
 }
-
+ 
 double _t10(List<int> b, int i) {
   final r = b[1 + 2 * i] * 256 + b[2 + 2 * i];
   if (r == 0) throw Exception('n/a');
   return r / 10 - 40;
 }
-
+ 
 final pids = <Pid>[
   Pid('05', 'eng', 'Температура на водата', 'Coolant temperature', '°C', 0, (b) => b[0] - 40.0),
   Pid('5C', 'eng', 'Температура на маслото', 'Engine oil temperature', '°C', 0, (b) => b[0] - 40.0),
@@ -344,14 +395,14 @@ final pids = <Pid>[
   Pid('RV', 'el', 'Напрежение на акумулатора', 'Battery voltage', 'V', 1, (b) => 0),
   Pid('42', 'el', 'Напрежение на модула (ECU)', 'Control module voltage', 'V', 1, (b) => (b[0] * 256 + b[1]) / 1000),
 ];
-
+ 
 bool isSup(Pid p, Set<int> s) {
   if (p.id == 'RV') return true;
   if (p.id == 'BOOST') return s.contains(0x0B) && s.contains(0x33);
   final n = int.tryParse(p.q, radix: 16);
   return n != null && s.contains(n);
 }
-
+ 
 Future<Set<int>> probePids(Elm e) async {
   final out = <int>{};
   for (var base = 0; base <= 0x80; base += 0x20) {
@@ -367,14 +418,15 @@ Future<Set<int>> probePids(Elm e) async {
   }
   return out;
 }
-
+ 
 // ---------- приложение ----------
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await loadGarage();
+  logAdd('TORQIQ $kVersion');
   runApp(App());
 }
-
+ 
 class App extends StatelessWidget {
   App({super.key});
   @override
@@ -389,16 +441,16 @@ class App extends StatelessWidget {
             home: Home(),
           ));
 }
-
+ 
 class Home extends StatefulWidget {
   Home({super.key});
   @override
   State<Home> createState() => _HomeState();
 }
-
+ 
 class _HomeState extends State<Home> {
   int i = 0;
-
+ 
   @override
   void initState() {
     super.initState();
@@ -439,23 +491,23 @@ class _HomeState extends State<Home> {
         ),
       );
 }
-
+ 
 class ScanTab extends StatefulWidget {
   ScanTab({super.key});
   @override
   State<ScanTab> createState() => _ScanTabState();
 }
-
+ 
 class _ScanTabState extends State<ScanTab> {
   List<ScanResult> found = [];
   bool busy = false;
   String msg = '';
   StreamSubscription? sub;
   List<String>? stored, pending, perm;
-
+ 
   @override
   void dispose() { sub?.cancel(); super.dispose(); }
-
+ 
   Future<void> search() async {
     setState(() { found = []; msg = ''; });
     sub?.cancel();
@@ -468,7 +520,7 @@ class _ScanTabState extends State<ScanTab> {
       if (mounted) setState(() => msg = '${t('error')}: $x');
     }
   }
-
+ 
   Future<void> connect(BluetoothDevice d) async {
     await FlutterBluePlus.stopScan();
     setState(() { busy = true; msg = t('connecting'); });
@@ -480,11 +532,12 @@ class _ScanTabState extends State<ScanTab> {
       connected.value = true;
       msg = '';
     } catch (x) {
+      logAdd('connect error: $x');
       msg = '${t('error')}: $x';
     }
     if (mounted) setState(() => busy = false);
   }
-
+ 
   Future<void> startDemo() async {
     setState(() => busy = true);
     elm = Elm.demo();
@@ -492,7 +545,7 @@ class _ScanTabState extends State<ScanTab> {
     connected.value = true;
     if (mounted) setState(() => busy = false);
   }
-
+ 
   Future<void> readCodes() async {
     setState(() { busy = true; msg = t('reading'); });
     try {
@@ -503,6 +556,7 @@ class _ScanTabState extends State<ScanTab> {
       stored = s;
       pending = p.where((k) => !s.contains(k)).toList();
       perm = x;
+      logAdd('DTC stored=$s pending=$pending permanent=$x');
       await saveHist(s, pending!, x);
       msg = '';
     } catch (err) {
@@ -510,7 +564,7 @@ class _ScanTabState extends State<ScanTab> {
     }
     if (mounted) setState(() => busy = false);
   }
-
+ 
   Future<void> clearCodes() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -539,7 +593,7 @@ class _ScanTabState extends State<ScanTab> {
     }
     if (mounted) setState(() => busy = false);
   }
-
+ 
   List<Widget> _group(String tk, String sk, List<String>? list, IconData icon, Color col) {
     if (list == null || list.isEmpty) return [];
     return [
@@ -560,7 +614,7 @@ class _ScanTabState extends State<ScanTab> {
         ),
     ];
   }
-
+ 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
       valueListenable: connected,
@@ -615,7 +669,7 @@ class _ScanTabState extends State<ScanTab> {
         ]);
       });
 }
-
+ 
 class CodePage extends StatelessWidget {
   final String code;
   final String? fuel;
@@ -652,27 +706,27 @@ class CodePage extends StatelessWidget {
     );
   }
 }
-
+ 
 class LiveTab extends StatefulWidget {
   LiveTab({super.key});
   @override
   State<LiveTab> createState() => _LiveTabState();
 }
-
+ 
 class _LiveTabState extends State<LiveTab> {
   final sel = <String>{'05', '0C'};
   final vals = <String, String>{};
   bool run = true;
-
+ 
   @override
   void initState() {
     super.initState();
     if (elm != null) loop();
   }
-
+ 
   @override
   void dispose() { run = false; super.dispose(); }
-
+ 
   Future<String> read(Pid p) async {
     if (p.id == 'RV') return (await elm!.send('ATRV', ms: 1500)).replaceAll(RegExp(r'[\r\n]'), ' ').trim();
     double? n;
@@ -685,7 +739,7 @@ class _LiveTabState extends State<LiveTab> {
     }
     return n == null ? t('na') : '${n.toStringAsFixed(p.dec)} ${p.unit}';
   }
-
+ 
   Future<void> loop() async {
     while (run && mounted && elm != null) {
       final ids = sel.toList();
@@ -698,7 +752,7 @@ class _LiveTabState extends State<LiveTab> {
       }
     }
   }
-
+ 
   @override
   Widget build(BuildContext c) {
     if (elm == null) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(t('noconn'))));
@@ -748,7 +802,7 @@ class _LiveTabState extends State<LiveTab> {
     ]);
   }
 }
-
+ 
 class HistTab extends StatelessWidget {
   HistTab({super.key});
   @override
@@ -759,7 +813,7 @@ class HistTab extends StatelessWidget {
         if (l.isEmpty) return Center(child: Text(t('nohist')));
         return ListView(padding: const EdgeInsets.all(8), children: [for (final x in l) _item(c, jsonDecode(x))]);
       });
-
+ 
   Widget _item(BuildContext c, Map m) {
     final d = DateTime.parse(m['t']).toLocal();
     final car = (m['car'] ?? '').toString();
@@ -791,11 +845,11 @@ class HistTab extends StatelessWidget {
     );
   }
 }
-
+ 
 // ---------- За приложението ----------
-const kVersion = '0.3.0';
+const kVersion = '0.3.1';
 const kContact = 'support@example.com'; // СМЕНЕТЕ с вашия имейл за контакт
-
+ 
 const _T = <String, List<String>>{
   'privacy': [
     'TORQIQ не изисква регистрация и не събира лични данни.\n\nДанните от автомобила (грешки и показания), историята на сканиранията и колите, които добавите в Гаража, се съхраняват само на вашия телефон и не се изпращат към сървър или трети страни.\n\nBluetooth се използва само за връзка с вашия OBD адаптер. Android изисква разрешение за местоположение, за да търси Bluetooth устройства; приложението не следи и не записва местоположението ви.\n\nМожете да изтриете историята, като изчистите данните на приложението от настройките на телефона.\n\nАко в бъдеще бъдат добавени реклами или покупки, тази политика ще бъде обновена и ще бъде поискано вашето съгласие, където е необходимо.',
@@ -810,7 +864,7 @@ const _T = <String, List<String>>{
     'Vehicles with an OBD-II (EOBD) port: petrol from 2001 and diesel from 2004 onwards.\n\nAdapters: Bluetooth LE (for example Veepeak OBDCheck BLE). Classic Bluetooth adapters are not supported.\n\nThe app reads generic engine fault codes and standard live data. Manufacturer-specific functions (ABS, airbags, transmission, coding) are not supported.',
   ],
 };
-
+ 
 class TextPage extends StatelessWidget {
   final String title, body;
   TextPage(this.title, this.body, {super.key});
@@ -820,7 +874,7 @@ class TextPage extends StatelessWidget {
         body: ListView(padding: const EdgeInsets.all(16), children: [Text(body, style: Theme.of(c).textTheme.bodyLarge)]),
       );
 }
-
+ 
 class AboutPage extends StatelessWidget {
   AboutPage({super.key});
   Widget _row(BuildContext c, IconData i, String k) => ListTile(
@@ -848,6 +902,7 @@ class AboutPage extends StatelessWidget {
           _row(c, Icons.directions_car, 'supported'),
           _row(c, Icons.privacy_tip_outlined, 'privacy'),
           _row(c, Icons.gavel, 'terms'),
+          ListTile(leading: const Icon(Icons.bug_report_outlined), title: Text(t('log')), trailing: const Icon(Icons.chevron_right), onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => LogPage()))),
           ListTile(leading: const Icon(Icons.mail_outline), title: Text(t('contact')), subtitle: Text(kContact)),
           ListTile(
             leading: const Icon(Icons.article_outlined),
@@ -859,17 +914,17 @@ class AboutPage extends StatelessWidget {
         ]),
       );
 }
-
-
+ 
+ 
 // ---------- Марка TORQIQ ----------
 const kBlue = Color(0xFF2D8CFF);
 const kGreen = Color(0xFF6BFF1A);
-
+ 
 ThemeData brandTheme() {
   final cs = ColorScheme.fromSeed(seedColor: kBlue, brightness: Brightness.dark).copyWith(primary: kBlue, secondary: kGreen, surface: const Color(0xFF0B111B));
   return ThemeData(colorScheme: cs, useMaterial3: true, scaffoldBackgroundColor: const Color(0xFF070B12));
 }
-
+ 
 Widget wordmark(double size) => RichText(
       text: TextSpan(
         style: TextStyle(fontSize: size, fontWeight: FontWeight.w900, fontStyle: FontStyle.italic, letterSpacing: 1),
@@ -879,7 +934,7 @@ Widget wordmark(double size) => RichText(
         ],
       ),
     );
-
+ 
 // ---------- Гараж ----------
 class Car {
   String id, make, model, fuel, engine, name;
@@ -899,16 +954,16 @@ class Car {
         km: (m['km'] as num?)?.toInt(),
       );
 }
-
+ 
 final cars = ValueNotifier<List<Car>>([]);
 final carId = ValueNotifier<String?>(null);
-
+ 
 Future<void> loadGarage() async {
   final p = await SharedPreferences.getInstance();
   cars.value = (p.getStringList('cars') ?? []).map((x) => Car.fromJson(jsonDecode(x))).toList();
   carId.value = p.getString('carId');
 }
-
+ 
 Future<void> saveGarage() async {
   final p = await SharedPreferences.getInstance();
   await p.setStringList('cars', cars.value.map((c) => jsonEncode(c.toJson())).toList());
@@ -919,14 +974,14 @@ Future<void> saveGarage() async {
     await p.setString('carId', id);
   }
 }
-
+ 
 Car? currentCar() {
   for (final c in cars.value) {
     if (c.id == carId.value) return c;
   }
   return null;
 }
-
+ 
 const fuels = <String, List<String>>{
   'petrol': ['Бензин', 'Petrol'],
   'diesel': ['Дизел', 'Diesel'],
@@ -935,14 +990,14 @@ const fuels = <String, List<String>>{
 };
 String fuelName(String k) => fuels[k]?[lang.value == 'bg' ? 0 : 1] ?? k;
 String carSub(Car c) => '${c.year > 0 ? '${c.year} · ' : ''}${fuelName(c.fuel)}${c.engine.isNotEmpty ? ' · ${c.engine}' : ''}';
-
+ 
 const makes = <String>[
   'Alfa Romeo', 'Audi', 'BMW', 'Chevrolet', 'Chrysler', 'Citroën', 'Cupra', 'Dacia', 'Daewoo', 'Dodge', 'Fiat', 'Ford', 'Honda', 'Hyundai',
   'Infiniti', 'Isuzu', 'Jaguar', 'Jeep', 'Kia', 'Lada', 'Lancia', 'Land Rover', 'Lexus', 'Mazda', 'Mercedes-Benz', 'Mini', 'Mitsubishi',
   'Nissan', 'Opel', 'Peugeot', 'Porsche', 'Renault', 'Rover', 'Saab', 'Seat', 'Škoda', 'Smart', 'SsangYong', 'Subaru', 'Suzuki', 'Toyota',
   'Volkswagen', 'Volvo', 'Друга / Other',
 ];
-
+ 
 const dtcNote = <String, Map<String, List<String>>>{
   'P0087': {
     'diesel': ['При дизел (Common Rail) най-често причина са горивният филтър, въздух в системата, слаба помпа за ниско налягане, износена помпа за високо налягане или теч на инжектор.', 'On diesel (common rail) the usual causes are the fuel filter, air in the system, a weak low-pressure pump, a worn high-pressure pump or an injector leak.'],
@@ -965,7 +1020,7 @@ const dtcNote = <String, Map<String, List<String>>>{
     'petrol': ['При бензин най-честата причина е износен катализатор или стара лямбда сонда след него. Първо изключете пропуски и теч в ауспуха.', 'On petrol engines the usual cause is a worn catalytic converter or an old downstream oxygen sensor. First rule out misfires and exhaust leaks.'],
   },
 };
-
+ 
 List<Widget> _fuelNotes(BuildContext c, String code, String? fuel) {
   final n = dtcNote[code];
   if (n == null) return [];
@@ -977,7 +1032,7 @@ List<Widget> _fuelNotes(BuildContext c, String code, String? fuel) {
       if (n[k] != null) Card(child: ListTile(leading: const Icon(Icons.local_gas_station), title: Text(fuelName(k)), subtitle: Text(n[k]![l]))),
   ];
 }
-
+ 
 Future<String?> pick(BuildContext c, String title, List<String> items) => showModalBottomSheet<String>(
       context: c,
       isScrollControlled: true,
@@ -991,7 +1046,7 @@ Future<String?> pick(BuildContext c, String title, List<String> items) => showMo
         ),
       ),
     );
-
+ 
 Future<void> chooseCar(BuildContext c) async {
   await showModalBottomSheet(
     context: c,
@@ -1010,7 +1065,7 @@ Future<void> chooseCar(BuildContext c) async {
     ),
   );
 }
-
+ 
 Widget carTile(BuildContext context) => ListenableBuilder(
       listenable: Listenable.merge([cars, carId]),
       builder: (_, __) {
@@ -1026,7 +1081,7 @@ Widget carTile(BuildContext context) => ListenableBuilder(
         );
       },
     );
-
+ 
 class GarageTab extends StatelessWidget {
   GarageTab({super.key});
   @override
@@ -1074,14 +1129,14 @@ class GarageTab extends StatelessWidget {
         ]),
       );
 }
-
+ 
 class CarForm extends StatefulWidget {
   final Car? car;
   CarForm({this.car, super.key});
   @override
   State<CarForm> createState() => _CarFormState();
 }
-
+ 
 class _CarFormState extends State<CarForm> {
   late String make = widget.car?.make ?? '';
   late int year = widget.car?.year ?? 0;
@@ -1090,7 +1145,7 @@ class _CarFormState extends State<CarForm> {
   late final engine = TextEditingController(text: widget.car?.engine ?? '');
   late final km = TextEditingController(text: widget.car?.km?.toString() ?? '');
   late final name = TextEditingController(text: widget.car?.name ?? '');
-
+ 
   void save() {
     if (make.isEmpty || year == 0 || fuel.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('fillreq'))));
@@ -1118,9 +1173,9 @@ class _CarFormState extends State<CarForm> {
     saveGarage();
     Navigator.pop(context);
   }
-
+ 
   InputDecoration deco(String label) => InputDecoration(labelText: label, border: const OutlineInputBorder());
-
+ 
   @override
   Widget build(BuildContext c) => Scaffold(
         appBar: AppBar(title: Text(widget.car == null ? t('addcar') : t('edit'))),
@@ -1157,4 +1212,35 @@ class _CarFormState extends State<CarForm> {
           FilledButton(onPressed: save, child: Text(t('save'))),
         ]),
       );
+}
+ 
+ 
+// ---------- Журнал (екран) ----------
+class LogPage extends StatefulWidget {
+  LogPage({super.key});
+  @override
+  State<LogPage> createState() => _LogPageState();
+}
+ 
+class _LogPageState extends State<LogPage> {
+  @override
+  Widget build(BuildContext c) {
+    final txt = logText();
+    return Scaffold(
+      appBar: AppBar(title: Text(t('log')), actions: [
+        IconButton(
+          icon: const Icon(Icons.copy),
+          tooltip: t('copy'),
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: txt));
+            ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(t('copied'))));
+          },
+        ),
+        IconButton(icon: const Icon(Icons.delete_outline), tooltip: t('clearlog'), onPressed: () => setState(logClear)),
+      ]),
+      body: ListView(padding: const EdgeInsets.all(12), children: [
+        SelectableText(txt.isEmpty ? t('logempty') : txt, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+      ]),
+    );
+  }
 }
