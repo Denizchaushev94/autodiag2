@@ -94,7 +94,7 @@ const _S = <String, List<String>>{
 String t(String k) => _S[k]![lang.value == 'bg' ? 0 : 1];
  
 // ---------- обяснения: [bg, en] -> [заглавие, описание, действия, разделени с |] ----------
-const Map<String, List<List<String>>> dtcDb = {
+final Map<String, List<List<String>>> dtcDb = {
   'P0087': [
     ['Налягане в горивната рейка – твърде ниско', 'Системата за високо налягане отчита по-ниско налягане от заповяданото. Двигателят може да губи мощност, да „дърпа“ или да не запали.', 'Карайте само внимателно и на кратко разстояние – възможна е загуба на мощност|Проверете нивото на горивото и състоянието на горивния филтър|Помолете сервиз да провери помпата за ниско налягане, регулатора на налягане и за течове'],
     ['Fuel rail pressure too low', 'The high-pressure fuel system reads lower pressure than commanded. The engine may lose power, hesitate or fail to start.', 'Drive carefully and only a short distance – power loss is possible|Check the fuel level and the fuel filter condition|Ask a workshop to check the low-pressure pump, pressure regulator and leaks'],
@@ -117,7 +117,7 @@ const Map<String, List<List<String>>> dtcDb = {
   ],
 };
  
-const sev = <String, int>{'P0087': 2, 'P0101': 1, 'P0171': 1, 'P0300': 2, 'P0420': 1};
+final sev = <String, int>{'P0087': 2, 'P0101': 1, 'P0171': 1, 'P0300': 2, 'P0420': 1};
 Color sevColor(int v) => v >= 2 ? Colors.red : (v == 1 ? Colors.orange : Colors.blueGrey);
  
 // ---------- Технически журнал ----------
@@ -424,6 +424,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await loadGarage();
   logAdd('TORQIQ $kVersion');
+  loadDtcData();
+  logAdd('DTC database: ${dtcDb.length} codes');
   runApp(App());
 }
  
@@ -607,7 +609,7 @@ class _ScanTabState extends State<ScanTab> {
           child: ListTile(
             leading: Icon(Icons.warning_amber, color: sevColor(sev[k] ?? 1)),
             title: Text(k),
-            subtitle: Text(dtcDb[k]?[lang.value == 'bg' ? 0 : 1][0] ?? '—'),
+            subtitle: Text(dtcInfo(k)[0]),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CodePage(k))),
           ),
@@ -676,7 +678,7 @@ class CodePage extends StatelessWidget {
   CodePage(this.code, {this.fuel, super.key});
   @override
   Widget build(BuildContext c) {
-    final d = dtcDb[code]?[lang.value == 'bg' ? 0 : 1];
+    final List<String>? d = dtcInfo(code);
     final f = fuel ?? currentCar()?.fuel;
     return Scaffold(
       appBar: AppBar(title: Text(code)),
@@ -847,7 +849,7 @@ class HistTab extends StatelessWidget {
 }
  
 // ---------- За приложението ----------
-const kVersion = '0.3.1';
+const kVersion = '0.3.2';
 const kContact = 'support@example.com'; // СМЕНЕТЕ с вашия имейл за контакт
  
 const _T = <String, List<String>>{
@@ -1244,3 +1246,374 @@ class _LogPageState extends State<LogPage> {
     );
   }
 }
+ 
+ 
+// ---------- База с кодове на грешки ----------
+const _sysP = <String, List<String>>{
+  '0': ['подаване на гориво и въздух', 'fuel and air metering'],
+  '1': ['подаване на гориво и въздух', 'fuel and air metering'],
+  '2': ['впръскване на гориво', 'fuel injection'],
+  '3': ['запалване и пропуски', 'ignition and misfires'],
+  '4': ['контрол на емисиите', 'emission controls'],
+  '5': ['скорост, празен ход и входове', 'speed, idle and inputs'],
+  '6': ['компютър и изходни вериги', 'computer and output circuits'],
+  '7': ['скоростна кутия', 'transmission'],
+  '8': ['скоростна кутия', 'transmission'],
+  '9': ['скоростна кутия', 'transmission'],
+};
+ 
+const _actsTxt = <List<String>>[
+  ['Обикновено не е опасно, но проверете скоро|Ако контролната лампа свети постоянно, посетете сервиз', 'Usually not dangerous, but check soon|If the warning light stays on, visit a workshop'],
+  ['Обикновено може да се кара внимателно, но не го отлагайте за дълго|Проверете причините или посетете сервиз|Не изтривайте кода, докато не разберете причината', 'Usually drivable with care, but do not delay for long|Check the causes or visit a workshop|Do not clear the code until you know the cause'],
+  ['Спрете или карайте само до най-близкия сервиз|Не натоварвайте двигателя|Не изтривайте кода преди ремонт', 'Stop or drive only to the nearest workshop|Do not load the engine|Do not clear the code before repair'],
+];
+String _acts(int sv, int l) => _actsTxt[(sv < 0 || sv > 2) ? 1 : sv][l];
+ 
+String _sysLine(String code, int l) {
+  final c0 = code.isEmpty ? 'P' : code[0];
+  final c3 = code.length > 2 ? code[2] : '';
+  String sys;
+  if (c0 == 'P') {
+    sys = _sysP[c3]?[l] ?? (l == 0 ? 'задвижване' : 'powertrain');
+  } else if (c0 == 'B') {
+    sys = l == 0 ? 'каросерия (въздушни възглавници, заключване, светлини)' : 'body (airbags, locks, lighting)';
+  } else if (c0 == 'C') {
+    sys = l == 0 ? 'шаси (ABS, управление, окачване)' : 'chassis (ABS, steering, suspension)';
+  } else {
+    sys = l == 0 ? 'комуникация между модулите' : 'module communication';
+  }
+  final mfr = code.length > 1 && (code[1] == '1' || code[1] == '3');
+  final note = mfr
+      ? (l == 0 ? ' Кодът е специфичен за производителя и значението му е различно при различните марки.' : ' This code is manufacturer-specific and its meaning differs between makes.')
+      : '';
+  return (l == 0 ? 'Група: $sys.' : 'Group: $sys.') + note;
+}
+ 
+List<String> _generic(String code, int l) => [
+      l == 0 ? 'Код $code' : 'Code $code',
+      '${_sysLine(code, l)} ${l == 0 ? 'Подробно описание за този код още не е добавено.' : 'A detailed description for this code has not been added yet.'}',
+      _acts(1, l),
+    ];
+ 
+List<String> dtcInfo(String code) {
+  final l = lang.value == 'bg' ? 0 : 1;
+  final e = dtcDb[code];
+  return e != null ? e[l] : _generic(code, l);
+}
+ 
+void loadDtcData() {
+  for (final line in dtcRaw.split('\n')) {
+    final f = line.trim().split('|');
+    if (f.length < 4) continue;
+    final code = f[0];
+    if (dtcDb.containsKey(code)) continue;
+    final sv = int.tryParse(f[1]) ?? 1;
+    final hb = f.length > 4 ? f[4] : '';
+    final he = f.length > 5 ? f[5] : '';
+    dtcDb[code] = [
+      [f[2], hb.isNotEmpty ? hb : _sysLine(code, 0), _acts(sv, 0)],
+      [f[3], he.isNotEmpty ? he : _sysLine(code, 1), _acts(sv, 1)],
+    ];
+    sev[code] = sv;
+  }
+}
+ 
+const String dtcRaw = r'''
+C0035|1|Сензор за скорост на колелото – предно ляво|Left front wheel speed sensor circuit
+C0040|1|Сензор за скорост на колелото – предно дясно|Right front wheel speed sensor circuit
+C0045|1|Сензор за скорост на колелото – задно ляво|Left rear wheel speed sensor circuit
+C0050|1|Сензор за скорост на колелото – задно дясно|Right rear wheel speed sensor circuit
+P0010|1|Задвижване на разпределителен вал A (банка 1) – верига|Camshaft position actuator A circuit (bank 1)
+P0011|1|Разпределителен вал A (банка 1) – фази твърде напред|Camshaft timing A over-advanced (bank 1)|Често е ниско или замърсено масло, неизправен VVT клапан или износена верига.|Often low or dirty oil, a faulty VVT valve or a worn chain.
+P0012|1|Разпределителен вал A (банка 1) – фази твърде назад|Camshaft timing A over-retarded (bank 1)|Често е ниско или замърсено масло, неизправен VVT клапан или износена верига.|Often low or dirty oil, a faulty VVT valve or a worn chain.
+P0013|1|Задвижване на разпределителен вал B (банка 1) – верига|Camshaft position actuator B circuit (bank 1)
+P0014|1|Разпределителен вал B (банка 1) – фази твърде напред|Camshaft timing B over-advanced (bank 1)|Често е ниско или замърсено масло, неизправен VVT клапан или износена верига.|Often low or dirty oil, a faulty VVT valve or a worn chain.
+P0015|1|Разпределителен вал B (банка 1) – фази твърде назад|Camshaft timing B over-retarded (bank 1)|Често е ниско или замърсено масло, неизправен VVT клапан или износена верига.|Often low or dirty oil, a faulty VVT valve or a worn chain.
+P0016|2|Корелация колянов – разпределителен вал (банка 1, сензор A)|Crankshaft/camshaft position correlation (bank 1, sensor A)|Често е обтегнат ремък или верига на ангренажа, или неизправен сензор. Проверете в сервиз, преди да продължите да карате.|Often a stretched timing belt or chain, or a faulty sensor. Have it checked at a workshop before driving on.
+P0017|2|Корелация колянов – разпределителен вал (банка 1, сензор B)|Crankshaft/camshaft position correlation (bank 1, sensor B)|Често е обтегнат ремък или верига на ангренажа, или неизправен сензор. Проверете в сервиз, преди да продължите да карате.|Often a stretched timing belt or chain, or a faulty sensor. Have it checked at a workshop before driving on.
+P0018|2|Корелация колянов – разпределителен вал (банка 2, сензор A)|Crankshaft/camshaft position correlation (bank 2, sensor A)|Често е обтегнат ремък или верига на ангренажа, или неизправен сензор. Проверете в сервиз, преди да продължите да карате.|Often a stretched timing belt or chain, or a faulty sensor. Have it checked at a workshop before driving on.
+P0019|2|Корелация колянов – разпределителен вал (банка 2, сензор B)|Crankshaft/camshaft position correlation (bank 2, sensor B)|Често е обтегнат ремък или верига на ангренажа, или неизправен сензор. Проверете в сервиз, преди да продължите да карате.|Often a stretched timing belt or chain, or a faulty sensor. Have it checked at a workshop before driving on.
+P0045|1|Турбо: клапан за управление на наддуването – верига|Turbo boost control solenoid circuit
+P0046|1|Турбо: управление на наддуването – извън диапазона|Turbo boost control performance
+P0047|1|Турбо: управление на наддуването – ниско напрежение|Turbo boost control circuit low
+P0048|1|Турбо: управление на наддуването – високо напрежение|Turbo boost control circuit high
+P0070|1|Сензор за външна температура – верига|Ambient air temperature sensor circuit
+P0071|1|Сензор за външна температура – извън диапазона|Ambient air temperature sensor range/performance
+P0072|1|Сензор за външна температура – ниско напрежение|Ambient air temperature sensor circuit low
+P0073|1|Сензор за външна температура – високо напрежение|Ambient air temperature sensor circuit high
+P0088|2|Налягане в горивната рейка – твърде високо|Fuel rail pressure too high|Рискът е от повреда на системата за високо налягане. Не продължавайте да карате с натоварване.|Risk of damage to the high-pressure system. Do not keep driving under load.
+P0089|1|Регулатор на горивното налягане 1 – неизправност|Fuel pressure regulator 1 performance
+P0090|1|Регулатор на горивното налягане 1 – верига|Fuel pressure regulator 1 control circuit
+P0100|1|MAF сензор – верига|Mass air flow sensor circuit
+P0101|1|MAF сензор – извън диапазона|Mass air flow sensor range/performance
+P0102|1|MAF сензор – ниско напрежение|Mass air flow sensor circuit low
+P0103|1|MAF сензор – високо напрежение|Mass air flow sensor circuit high
+P0104|1|MAF сензор – периодично|Mass air flow sensor intermittent
+P0105|1|MAP/барометричен сензор – верига|MAP/barometric pressure sensor circuit
+P0106|1|MAP/барометричен сензор – извън диапазона|MAP/barometric pressure sensor range/performance
+P0107|1|MAP/барометричен сензор – ниско напрежение|MAP/barometric pressure sensor circuit low
+P0108|1|MAP/барометричен сензор – високо напрежение|MAP/barometric pressure sensor circuit high
+P0109|1|MAP/барометричен сензор – периодично|MAP/barometric pressure sensor intermittent
+P0110|1|Температура на всмукания въздух – верига|Intake air temperature sensor circuit
+P0111|1|Температура на всмукания въздух – извън диапазона|Intake air temperature sensor range/performance
+P0112|1|Температура на всмукания въздух – ниско напрежение|Intake air temperature sensor circuit low
+P0113|1|Температура на всмукания въздух – високо напрежение|Intake air temperature sensor circuit high
+P0114|1|Температура на всмукания въздух – периодично|Intake air temperature sensor intermittent
+P0115|1|Температура на охладителната течност – верига|Coolant temperature sensor circuit
+P0116|1|Температура на охладителната течност – извън диапазона|Coolant temperature sensor range/performance
+P0117|1|Температура на охладителната течност – ниско напрежение|Coolant temperature sensor circuit low
+P0118|1|Температура на охладителната течност – високо напрежение|Coolant temperature sensor circuit high
+P0119|1|Температура на охладителната течност – периодично|Coolant temperature sensor intermittent
+P0120|1|Сензор на дросела/педала A – верига|Throttle/pedal position sensor A circuit
+P0121|1|Сензор на дросела/педала A – извън диапазона|Throttle/pedal position sensor A range/performance
+P0122|1|Сензор на дросела/педала A – ниско напрежение|Throttle/pedal position sensor A circuit low
+P0123|1|Сензор на дросела/педала A – високо напрежение|Throttle/pedal position sensor A circuit high
+P0124|1|Сензор на дросела/педала A – периодично|Throttle/pedal position sensor A intermittent
+P0125|1|Недостатъчна температура на двигателя за регулиране|Insufficient coolant temperature for closed loop|Най-често е термостатът (залепнал отворен).|Most often the thermostat (stuck open).
+P0128|1|Термостат – температурата не достига работната|Coolant thermostat below regulating temperature|Най-често е термостатът (залепнал отворен).|Most often the thermostat (stuck open).
+P0130|1|Лямбда сонда (банка 1, сензор 1) – верига|O2 sensor (bank 1, sensor 1) circuit malfunction
+P0131|1|Лямбда сонда (банка 1, сензор 1) – ниско напрежение|O2 sensor (bank 1, sensor 1) low voltage
+P0132|1|Лямбда сонда (банка 1, сензор 1) – високо напрежение|O2 sensor (bank 1, sensor 1) high voltage
+P0133|1|Лямбда сонда (банка 1, сензор 1) – бавна реакция|O2 sensor (bank 1, sensor 1) slow response
+P0134|1|Лямбда сонда (банка 1, сензор 1) – няма активност|O2 sensor (bank 1, sensor 1) no activity detected
+P0135|1|Лямбда сонда (банка 1, сензор 1) – нагревател – верига|O2 sensor (bank 1, sensor 1) heater circuit
+P0136|1|Лямбда сонда (банка 1, сензор 2) – верига|O2 sensor (bank 1, sensor 2) circuit malfunction
+P0137|1|Лямбда сонда (банка 1, сензор 2) – ниско напрежение|O2 sensor (bank 1, sensor 2) low voltage
+P0138|1|Лямбда сонда (банка 1, сензор 2) – високо напрежение|O2 sensor (bank 1, sensor 2) high voltage
+P0139|1|Лямбда сонда (банка 1, сензор 2) – бавна реакция|O2 sensor (bank 1, sensor 2) slow response
+P0140|1|Лямбда сонда (банка 1, сензор 2) – няма активност|O2 sensor (bank 1, sensor 2) no activity detected
+P0141|1|Лямбда сонда (банка 1, сензор 2) – нагревател – верига|O2 sensor (bank 1, sensor 2) heater circuit
+P0150|1|Лямбда сонда (банка 2, сензор 1) – верига|O2 sensor (bank 2, sensor 1) circuit malfunction
+P0151|1|Лямбда сонда (банка 2, сензор 1) – ниско напрежение|O2 sensor (bank 2, sensor 1) low voltage
+P0152|1|Лямбда сонда (банка 2, сензор 1) – високо напрежение|O2 sensor (bank 2, sensor 1) high voltage
+P0153|1|Лямбда сонда (банка 2, сензор 1) – бавна реакция|O2 sensor (bank 2, sensor 1) slow response
+P0154|1|Лямбда сонда (банка 2, сензор 1) – няма активност|O2 sensor (bank 2, sensor 1) no activity detected
+P0155|1|Лямбда сонда (банка 2, сензор 1) – нагревател – верига|O2 sensor (bank 2, sensor 1) heater circuit
+P0156|1|Лямбда сонда (банка 2, сензор 2) – верига|O2 sensor (bank 2, sensor 2) circuit malfunction
+P0157|1|Лямбда сонда (банка 2, сензор 2) – ниско напрежение|O2 sensor (bank 2, sensor 2) low voltage
+P0158|1|Лямбда сонда (банка 2, сензор 2) – високо напрежение|O2 sensor (bank 2, sensor 2) high voltage
+P0159|1|Лямбда сонда (банка 2, сензор 2) – бавна реакция|O2 sensor (bank 2, sensor 2) slow response
+P0160|1|Лямбда сонда (банка 2, сензор 2) – няма активност|O2 sensor (bank 2, sensor 2) no activity detected
+P0161|1|Лямбда сонда (банка 2, сензор 2) – нагревател – верига|O2 sensor (bank 2, sensor 2) heater circuit
+P0170|1|Корекция на горивото (банка 1) – неизправност|Fuel trim malfunction (bank 1)
+P0172|1|Богата смес (банка 1)|System too rich (bank 1)|Често: течащ инжектор, замърсен или повреден MAF, лямбда сонда или високо налягане на горивото.|Often a leaking injector, a dirty or faulty MAF, an oxygen sensor or high fuel pressure.
+P0173|1|Корекция на горивото (банка 2) – неизправност|Fuel trim malfunction (bank 2)
+P0174|1|Бедна смес (банка 2)|System too lean (bank 2)
+P0175|1|Богата смес (банка 2)|System too rich (bank 2)
+P0190|1|Сензор за налягане в горивната рейка – верига|Fuel rail pressure sensor circuit
+P0191|1|Сензор за налягане в горивната рейка – извън диапазона|Fuel rail pressure sensor range/performance
+P0192|1|Сензор за налягане в горивната рейка – ниско напрежение|Fuel rail pressure sensor circuit low
+P0193|1|Сензор за налягане в горивната рейка – високо напрежение|Fuel rail pressure sensor circuit high
+P0194|1|Сензор за налягане в горивната рейка – периодично|Fuel rail pressure sensor intermittent
+P0200|1|Инжектор – верига|Injector circuit malfunction
+P0201|1|Инжектор – цилиндър 1 – верига|Injector circuit – cylinder 1
+P0202|1|Инжектор – цилиндър 2 – верига|Injector circuit – cylinder 2
+P0203|1|Инжектор – цилиндър 3 – верига|Injector circuit – cylinder 3
+P0204|1|Инжектор – цилиндър 4 – верига|Injector circuit – cylinder 4
+P0205|1|Инжектор – цилиндър 5 – верига|Injector circuit – cylinder 5
+P0206|1|Инжектор – цилиндър 6 – верига|Injector circuit – cylinder 6
+P0207|1|Инжектор – цилиндър 7 – верига|Injector circuit – cylinder 7
+P0208|1|Инжектор – цилиндър 8 – верига|Injector circuit – cylinder 8
+P0209|1|Инжектор – цилиндър 9 – верига|Injector circuit – cylinder 9
+P0210|1|Инжектор – цилиндър 10 – верига|Injector circuit – cylinder 10
+P0211|1|Инжектор – цилиндър 11 – верига|Injector circuit – cylinder 11
+P0212|1|Инжектор – цилиндър 12 – верига|Injector circuit – cylinder 12
+P0217|2|Прегряване на двигателя|Engine overtemperature condition|Спрете безопасно и изключете двигателя. Не отваряйте капачката на горещ радиатор.|Stop safely and switch the engine off. Do not open the cap of a hot radiator.
+P0219|2|Превишени обороти на двигателя|Engine overspeed condition
+P0220|1|Сензор на дросела/педала B – верига|Throttle/pedal position sensor B circuit
+P0221|1|Сензор на дросела/педала B – извън диапазона|Throttle/pedal position sensor B range/performance
+P0222|1|Сензор на дросела/педала B – ниско напрежение|Throttle/pedal position sensor B circuit low
+P0223|1|Сензор на дросела/педала B – високо напрежение|Throttle/pedal position sensor B circuit high
+P0224|1|Сензор на дросела/педала B – периодично|Throttle/pedal position sensor B intermittent
+P0230|1|Горивна помпа – първична верига|Fuel pump primary circuit
+P0231|1|Горивна помпа – ниско напрежение|Fuel pump secondary circuit low
+P0232|1|Горивна помпа – високо напрежение|Fuel pump secondary circuit high
+P0234|2|Турбо: свръхналягане|Turbo overboost condition|Може да е залепнала управляваща клапа или теч в управлението на турбото. Не натоварвайте двигателя.|May be a stuck control valve or a leak in the turbo control. Do not load the engine.
+P0235|1|Сензор за наддувно налягане A – верига|Turbo boost pressure sensor A circuit
+P0236|1|Сензор за наддувно налягане A – извън диапазона|Turbo boost pressure sensor A range/performance
+P0237|1|Сензор за наддувно налягане A – ниско напрежение|Turbo boost pressure sensor A circuit low
+P0238|1|Сензор за наддувно налягане A – високо напрежение|Turbo boost pressure sensor A circuit high
+P0243|1|Wastegate клапан A – неизправност|Turbo wastegate solenoid A malfunction
+P0245|1|Wastegate клапан A – ниско напрежение|Turbo wastegate solenoid A low
+P0246|1|Wastegate клапан A – високо напрежение|Turbo wastegate solenoid A high
+P0299|1|Турбо: недостатъчно наддуване|Turbo underboost condition|Чести причини: теч във въздушния тракт или интеркулера, неизправен клапан на турбото, запушен DPF или катализатор.|Common causes: a leak in the air path or intercooler, a faulty turbo valve, a clogged DPF or catalyst.
+P0301|2|Пропуски в запалването – цилиндър 1|Cylinder 1 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0302|2|Пропуски в запалването – цилиндър 2|Cylinder 2 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0303|2|Пропуски в запалването – цилиндър 3|Cylinder 3 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0304|2|Пропуски в запалването – цилиндър 4|Cylinder 4 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0305|2|Пропуски в запалването – цилиндър 5|Cylinder 5 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0306|2|Пропуски в запалването – цилиндър 6|Cylinder 6 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0307|2|Пропуски в запалването – цилиндър 7|Cylinder 7 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0308|2|Пропуски в запалването – цилиндър 8|Cylinder 8 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0309|2|Пропуски в запалването – цилиндър 9|Cylinder 9 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0310|2|Пропуски в запалването – цилиндър 10|Cylinder 10 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0311|2|Пропуски в запалването – цилиндър 11|Cylinder 11 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0312|2|Пропуски в запалването – цилиндър 12|Cylinder 12 misfire detected|Проверете свещ, бобина и инжектор (бензин) или инжектор, подгревна свещ и компресия (дизел).|Check spark plug, coil and injector (petrol) or injector, glow plug and compression (diesel).
+P0335|2|Сензор на коляновия вал A – верига|Crankshaft position sensor A circuit|Може да не запали или да загасне при движение.|The engine may not start or may stall while driving.
+P0336|2|Сензор на коляновия вал A – извън диапазона|Crankshaft position sensor A range/performance|Може да не запали или да загасне при движение.|The engine may not start or may stall while driving.
+P0337|2|Сензор на коляновия вал A – ниско напрежение|Crankshaft position sensor A circuit low|Може да не запали или да загасне при движение.|The engine may not start or may stall while driving.
+P0338|2|Сензор на коляновия вал A – високо напрежение|Crankshaft position sensor A circuit high|Може да не запали или да загасне при движение.|The engine may not start or may stall while driving.
+P0339|2|Сензор на коляновия вал A – периодично|Crankshaft position sensor A intermittent|Може да не запали или да загасне при движение.|The engine may not start or may stall while driving.
+P0340|1|Сензор на разпределителния вал A (банка 1) – верига|Camshaft position sensor A (bank 1) circuit
+P0341|1|Сензор на разпределителния вал A (банка 1) – извън диапазона|Camshaft position sensor A (bank 1) range/performance
+P0342|1|Сензор на разпределителния вал A (банка 1) – ниско напрежение|Camshaft position sensor A (bank 1) circuit low
+P0343|1|Сензор на разпределителния вал A (банка 1) – високо напрежение|Camshaft position sensor A (bank 1) circuit high
+P0344|1|Сензор на разпределителния вал A (банка 1) – периодично|Camshaft position sensor A (bank 1) intermittent
+P0351|2|Бобина за запалване A – верига|Ignition coil A primary/secondary circuit
+P0352|2|Бобина за запалване B – верига|Ignition coil B primary/secondary circuit
+P0353|2|Бобина за запалване C – верига|Ignition coil C primary/secondary circuit
+P0354|2|Бобина за запалване D – верига|Ignition coil D primary/secondary circuit
+P0355|2|Бобина за запалване E – верига|Ignition coil E primary/secondary circuit
+P0356|2|Бобина за запалване F – верига|Ignition coil F primary/secondary circuit
+P0380|1|Подгревна свещ/нагревател A – верига|Glow plug/heater circuit A
+P0381|0|Лампа на подгревните свещи – верига|Glow plug indicator circuit
+P0385|1|Сензор на коляновия вал B – верига|Crankshaft position sensor B circuit
+P0400|1|EGR – неизправност на потока|EGR flow malfunction
+P0401|1|EGR – недостатъчен поток|EGR flow insufficient|Често е запушен или залепнал EGR клапан или тръбопровод с нагар, особено при дизел.|Often a clogged or stuck EGR valve or a carbon-blocked pipe, especially on diesels.
+P0402|1|EGR – прекомерен поток|EGR flow excessive|Често е залепнал отворен EGR клапан.|Often an EGR valve stuck open.
+P0403|1|EGR – верига|EGR circuit malfunction
+P0404|1|EGR – извън диапазона|EGR circuit range/performance
+P0405|1|EGR сензор A – ниско напрежение|EGR sensor A circuit low
+P0406|1|EGR сензор A – високо напрежение|EGR sensor A circuit high
+P0410|1|Система за вторичен въздух – неизправност|Secondary air injection system malfunction
+P0411|1|Система за вторичен въздух – неправилен поток|Secondary air injection incorrect flow
+P0421|1|Катализатор (загряване) – ефективност под прага (банка 1)|Warm-up catalyst efficiency below threshold (bank 1)|Първо изключете пропуски и теч в ауспуха, после лямбда сондите.|First rule out misfires and exhaust leaks, then the oxygen sensors.
+P0430|1|Катализатор – ефективност под прага (банка 2)|Catalyst efficiency below threshold (bank 2)|Първо изключете пропуски и теч в ауспуха, после лямбда сондите.|First rule out misfires and exhaust leaks, then the oxygen sensors.
+P0431|1|Катализатор (загряване) – ефективност под прага (банка 2)|Warm-up catalyst efficiency below threshold (bank 2)|Първо изключете пропуски и теч в ауспуха, после лямбда сондите.|First rule out misfires and exhaust leaks, then the oxygen sensors.
+P0440|0|Система за пари на горивото – неизправност|Evaporative emission system malfunction
+P0441|0|Система за пари – неправилен поток при продухване|Evap incorrect purge flow
+P0442|0|Система за пари – малък теч|Evap system small leak detected|Често е разхлабена капачка на резервоара – проверете я първо.|Often a loose fuel cap – check it first.
+P0443|0|Клапан за продухване – верига|Evap purge control valve circuit
+P0444|0|Клапан за продухване – отворена верига|Evap purge control valve circuit open
+P0445|0|Клапан за продухване – късо съединение|Evap purge control valve circuit shorted
+P0446|0|Вентилационен клапан – верига|Evap vent control circuit
+P0447|0|Вентилационен клапан – отворена верига|Evap vent control circuit open
+P0448|0|Вентилационен клапан – късо съединение|Evap vent control circuit shorted
+P0449|0|Вентилационен клапан/електромагнит – верига|Evap vent valve/solenoid circuit
+P0450|0|Сензор за налягане в системата за пари – верига|Evap system pressure sensor circuit
+P0451|0|Сензор за налягане в системата за пари – извън диапазона|Evap system pressure sensor range/performance
+P0452|0|Сензор за налягане в системата за пари – ниско напрежение|Evap system pressure sensor circuit low
+P0453|0|Сензор за налягане в системата за пари – високо напрежение|Evap system pressure sensor circuit high
+P0454|0|Сензор за налягане в системата за пари – периодично|Evap system pressure sensor intermittent
+P0455|0|Система за пари – голям теч|Evap system large leak detected|Проверете капачката на резервоара и маркучите на системата за пари.|Check the fuel cap and the evap system hoses.
+P0456|0|Система за пари – много малък теч|Evap system very small leak detected
+P0457|0|Теч в системата за пари (разхлабена или липсваща капачка)|Evap leak detected (fuel cap loose or missing)|Затегнете или сменете капачката на резервоара и изчакайте няколко цикъла на шофиране.|Tighten or replace the fuel cap and allow several drive cycles.
+P0460|0|Сензор за ниво на горивото – верига|Fuel level sensor circuit
+P0461|0|Сензор за ниво на горивото – извън диапазона|Fuel level sensor range/performance
+P0462|0|Сензор за ниво на горивото – ниско напрежение|Fuel level sensor circuit low
+P0463|0|Сензор за ниво на горивото – високо напрежение|Fuel level sensor circuit high
+P0464|0|Сензор за ниво на горивото – периодично|Fuel level sensor intermittent
+P0480|1|Вентилатор на охлаждането 1 – верига|Cooling fan 1 control circuit
+P0481|1|Вентилатор на охлаждането 2 – верига|Cooling fan 2 control circuit
+P0500|1|Сензор за скорост на колата – верига|Vehicle speed sensor circuit
+P0501|1|Сензор за скорост на колата – извън диапазона|Vehicle speed sensor range/performance
+P0502|1|Сензор за скорост на колата – ниско напрежение|Vehicle speed sensor circuit low
+P0503|1|Сензор за скорост на колата – периодично|Vehicle speed sensor intermittent
+P0504|1|Спирачен превключвател A/B – несъответствие|Brake switch A/B correlation
+P0505|1|Регулиране на празния ход – неизправност|Idle control system malfunction
+P0506|1|Обороти на празен ход – по-ниски от очакваните|Idle speed lower than expected
+P0507|1|Обороти на празен ход – по-високи от очакваните|Idle speed higher than expected|Често е замърсен дросел или теч във всмукването.|Often a dirty throttle body or an intake leak.
+P0510|1|Превключвател на закрит дросел – верига|Closed throttle position switch circuit
+P0520|1|Сензор за налягане на маслото – верига|Engine oil pressure sensor circuit
+P0521|1|Сензор за налягане на маслото – извън диапазона|Engine oil pressure sensor range/performance
+P0522|1|Сензор за налягане на маслото – ниско напрежение|Engine oil pressure sensor circuit low
+P0523|1|Сензор за налягане на маслото – високо напрежение|Engine oil pressure sensor circuit high
+P0524|2|Налягане на маслото – твърде ниско|Engine oil pressure too low|Спрете веднага и проверете нивото на маслото. Рискът е от сериозна повреда на двигателя.|Stop immediately and check the oil level. There is a risk of serious engine damage.
+P0544|1|Сензор за температура на изгорелите газове (EGT) – верига (банка 1, сензор 1)|Exhaust gas temperature sensor circuit (bank 1, sensor 1)
+P0545|1|Сензор за температура на изгорелите газове (EGT) – ниско напрежение|Exhaust gas temperature sensor circuit low (bank 1, sensor 1)
+P0546|1|Сензор за температура на изгорелите газове (EGT) – високо напрежение|Exhaust gas temperature sensor circuit high (bank 1, sensor 1)
+P0560|1|Напрежение на системата – неизправност|System voltage malfunction
+P0561|1|Напрежение на системата – нестабилно|System voltage unstable
+P0562|1|Напрежение на системата – ниско|System voltage low|Често: слаб акумулатор или генератор, лоша маса или клеми.|Often a weak battery or alternator, a poor ground or loose terminals.
+P0563|1|Напрежение на системата – високо|System voltage high
+P0571|0|Спирачен превключвател на круиз контрола – верига|Cruise control brake switch A circuit
+P0600|1|Серийна комуникация между модулите – неизправност|Serial communication link malfunction
+P0601|2|Памет на управляващия модул – грешка в контролната сума|Control module memory checksum error
+P0602|2|Грешка в програмирането на управляващия модул|Control module programming error
+P0603|1|Памет KAM на модула – грешка|Control module keep-alive memory error
+P0604|2|RAM памет на модула – грешка|Control module RAM error
+P0605|2|ROM памет на модула – грешка|Control module ROM error
+P0606|2|Процесор на управляващия модул – неизправност|Control module processor fault
+P0607|1|Управляващ модул – производителност|Control module performance
+P0620|1|Генератор – верига за управление|Generator control circuit malfunction
+P0630|0|VIN не е програмиран или не съвпада|VIN not programmed or mismatched
+P0641|1|Захранване на сензорите A – прекъсната верига|Sensor reference voltage A circuit open
+P0651|1|Захранване на сензорите B – прекъсната верига|Sensor reference voltage B circuit open
+P0670|1|Модул на подгревните свещи – верига|Glow plug module control circuit
+P0671|1|Подгревна свещ – цилиндър 1 – верига|Cylinder 1 glow plug circuit
+P0672|1|Подгревна свещ – цилиндър 2 – верига|Cylinder 2 glow plug circuit
+P0673|1|Подгревна свещ – цилиндър 3 – верига|Cylinder 3 glow plug circuit
+P0674|1|Подгревна свещ – цилиндър 4 – верига|Cylinder 4 glow plug circuit
+P0683|1|Връзка между модула на подгревните свещи и ECU|Glow plug control module to PCM communication circuit
+P0685|1|Реле на захранването на ECU – прекъсната верига|ECM power relay control circuit open
+P0700|1|Система за управление на скоростната кутия – неизправност|Transmission control system malfunction|Показва, че в кутията има по-подробни кодове – прочетете ги със специализиран скенер.|Indicates the transmission has more detailed codes – read them with a specialised scanner.
+P0701|1|Управление на скоростната кутия – извън диапазона|Transmission control system range/performance
+P0702|1|Управление на скоростната кутия – електрическа грешка|Transmission control system electrical
+P0703|1|Спирачен превключвател B – верига|Brake switch B circuit
+P0705|1|Сензор за положение на лоста на кутията – верига|Transmission range sensor circuit
+P0706|1|Сензор за положение на лоста на кутията – извън диапазона|Transmission range sensor range/performance
+P0710|1|Сензор за температура на маслото в кутията – верига|Transmission fluid temperature sensor circuit
+P0711|1|Сензор за температура на маслото в кутията – извън диапазона|Transmission fluid temperature sensor range/performance
+P0712|1|Сензор за температура на маслото в кутията – ниско|Transmission fluid temperature sensor circuit low
+P0713|1|Сензор за температура на маслото в кутията – високо|Transmission fluid temperature sensor circuit high
+P0715|1|Сензор за входящи обороти на кутията – верига|Input/turbine speed sensor circuit
+P0716|1|Сензор за входящи обороти на кутията – извън диапазона|Input/turbine speed sensor range/performance
+P0720|1|Сензор за изходящи обороти на кутията – верига|Output speed sensor circuit
+P0721|1|Сензор за изходящи обороти на кутията – извън диапазона|Output speed sensor range/performance
+P0725|1|Вход за обороти на двигателя към кутията – верига|Engine speed input circuit
+P0730|1|Грешно предавателно отношение|Incorrect gear ratio
+P0731|1|Грешно предавателно отношение – предавка 1|Gear 1 incorrect ratio
+P0732|1|Грешно предавателно отношение – предавка 2|Gear 2 incorrect ratio
+P0733|1|Грешно предавателно отношение – предавка 3|Gear 3 incorrect ratio
+P0734|1|Грешно предавателно отношение – предавка 4|Gear 4 incorrect ratio
+P0735|1|Грешно предавателно отношение – предавка 5|Gear 5 incorrect ratio
+P0740|1|Съединител на хидротрансформатора – верига|Torque converter clutch circuit
+P0741|1|Съединител на хидротрансформатора – не се включва|Torque converter clutch stuck off or performance
+P0742|1|Съединител на хидротрансформатора – залепнал включен|Torque converter clutch stuck on
+P0743|1|Съединител на хидротрансформатора – електрическа грешка|Torque converter clutch electrical
+P0746|1|Електромагнит за налягане A – неизправност|Pressure control solenoid A performance
+P0750|1|Превключващ електромагнит A – верига|Shift solenoid A circuit
+P0751|1|Превключващ електромагнит A – неизправност|Shift solenoid A performance
+P0755|1|Превключващ електромагнит B – верига|Shift solenoid B circuit
+P0760|1|Превключващ електромагнит C – верига|Shift solenoid C circuit
+P0765|1|Превключващ електромагнит D – верига|Shift solenoid D circuit
+P0770|1|Превключващ електромагнит E – верига|Shift solenoid E circuit
+P0780|1|Неизправност при превключване на предавките|Shift malfunction
+P0781|1|Неизправност при превключване 1-2|1-2 shift malfunction
+P0782|1|Неизправност при превключване 2-3|2-3 shift malfunction
+P0783|1|Неизправност при превключване 3-4|3-4 shift malfunction
+P0784|1|Неизправност при превключване 4-5|4-5 shift malfunction
+P0790|1|Превключвател нормален/спортен режим – верига|Normal/performance switch circuit
+P2002|1|DPF – ефективност под прага (банка 1)|Diesel particulate filter efficiency below threshold (bank 1)|Често е запушен DPF: може да помогне регенерация (по-дълго пътуване при по-високи обороти) или нужен сервиз.|Often a clogged DPF: a regeneration (a longer drive at higher revs) may help, or a workshop is needed.
+P2080|1|EGT сензор – извън диапазона (банка 1, сензор 1)|EGT sensor range/performance (bank 1, sensor 1)
+P2081|1|EGT сензор – периодично (банка 1, сензор 1)|EGT sensor intermittent (bank 1, sensor 1)
+P2096|1|Корекция след катализатора – твърде бедна (банка 1)|Post catalyst fuel trim too lean (bank 1)
+P2097|1|Корекция след катализатора – твърде богата (банка 1)|Post catalyst fuel trim too rich (bank 1)
+P20EE|1|SCR катализатор (NOx) – ефективност под прага (банка 1)|SCR NOx catalyst efficiency below threshold (bank 1)|Проверете нивото и качеството на AdBlue; ако кодът продължава, посетете сервиз.|Check the AdBlue level and quality; if the code persists, visit a workshop.
+P2100|1|Мотор на дроселовата клапа – верига|Throttle actuator control motor circuit
+P2101|1|Мотор на дроселовата клапа – извън диапазона|Throttle actuator control motor range/performance
+P2102|1|Мотор на дроселовата клапа – ниско напрежение|Throttle actuator control motor circuit low
+P2103|1|Мотор на дроселовата клапа – високо напрежение|Throttle actuator control motor circuit high
+P2106|2|Дросел – принудително ограничена мощност|Throttle actuator forced limited power
+P2135|1|Сензори на дросела/педала – несъответствие|Throttle/pedal position sensor correlation
+P2195|1|Лямбда сонда – застинала бедна (банка 1, сензор 1)|O2 sensor signal stuck lean (bank 1, sensor 1)
+P2196|1|Лямбда сонда – застинала богата (банка 1, сензор 1)|O2 sensor signal stuck rich (bank 1, sensor 1)
+P2279|1|Теч във всмукателния тракт|Intake air system leak
+P2413|1|EGR – неизправност|EGR system performance
+P244A|1|DPF – диференциално налягане твърде ниско|DPF differential pressure too low
+P244B|1|DPF – диференциално налягане твърде високо|DPF differential pressure too high|Често е запушен DPF: може да помогне регенерация (по-дълго пътуване при по-високи обороти) или нужен сервиз.|Often a clogged DPF: a regeneration (a longer drive at higher revs) may help, or a workshop is needed.
+P2452|1|Сензор за налягане на DPF – верига|DPF pressure sensor circuit
+P2453|1|Сензор за налягане на DPF – извън диапазона|DPF pressure sensor range/performance
+P2454|1|Сензор за налягане на DPF – ниско напрежение|DPF pressure sensor circuit low
+P2455|1|Сензор за налягане на DPF – високо напрежение|DPF pressure sensor circuit high
+P2458|1|DPF – продължителност на регенерацията|DPF regeneration duration
+P2459|1|DPF – честота на регенерацията|DPF regeneration frequency
+P2463|1|DPF – запушване със сажди|DPF restriction soot accumulation|Често е запушен DPF: може да помогне регенерация (по-дълго пътуване при по-високи обороти) или нужен сервиз.|Often a clogged DPF: a regeneration (a longer drive at higher revs) may help, or a workshop is needed.
+U0001|1|CAN шина (висока скорост) – комуникация|High-speed CAN communication bus
+U0073|1|Шина за комуникация A – изключена|Control module communication bus A off
+U0100|1|Загубена връзка с ECU/PCM|Lost communication with ECM/PCM A|Често е проблем със захранване, маса или CAN връзка; проверете акумулатора и клемите.|Often a power, ground or CAN wiring problem; check the battery and terminals.
+U0101|1|Загубена връзка с модула на скоростната кутия|Lost communication with TCM
+U0121|1|Загубена връзка с ABS модула|Lost communication with ABS control module
+U0140|1|Загубена връзка с модула на каросерията|Lost communication with body control module
+U0155|1|Загубена връзка с таблото|Lost communication with instrument cluster
+''';
